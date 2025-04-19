@@ -1,0 +1,6 @@
+target
+.vscode/*
+.gitdb/*
+**/.gitdb/*
+server
+gitdb-server/gitdb-server
