@@ -26,9 +26,31 @@ public class GitDBJDBCDriver implements Driver {
         return url != null && url.startsWith("jdbc:gitdb:");
     }
 
-    @Override public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) { return new DriverPropertyInfo[0]; }
-    @Override public int getMajorVersion() { return 1; }
-    @Override public int getMinorVersion() { return 0; }
-    @Override public boolean jdbcCompliant() { return false; }
-    @Override public Logger getParentLogger() { return Logger.getGlobal(); }
-}
+    @Override
+    public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) throws SQLException {
+        return new DriverPropertyInfo[] {
+            new DriverPropertyInfo("url", url),
+            new DriverPropertyInfo("info", info != null ? info.toString() : "")
+        };
+    }
+
+    @Override
+    public int getMajorVersion() {
+        return 1;
+    }
+
+    @Override
+    public int getMinorVersion() {
+        return 0;
+    }
+
+    @Override
+    public boolean jdbcCompliant() {
+        return false;
+    }
+
+    @Override
+    public Logger getParentLogger() {
+        return Logger.getLogger("com.gitdb");
+    }
+} 

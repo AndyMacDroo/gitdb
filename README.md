@@ -81,7 +81,7 @@ Connection conn = DriverManager.getConnection("jdbc:gitdb:http://localhost:8080"
 Statement stmt = conn.createStatement();
 stmt.execute("CREATE DATABASE demo");
 stmt.execute("USE DATABASE demo");
-stmt.execute("CREATE TABLE users (name,email)");
+stmt.execute("CREATE TABLE users (name STRING,email STRING)");
 stmt.execute("INSERT INTO users (name,email) VALUES ('Alice','alice@example.com')");
 ResultSet rs = stmt.executeQuery("SELECT * FROM users");
 ```
