@@ -55,7 +55,7 @@ public class GitDBIntegrationTest {
         Statement stmt = conn.createStatement();
         stmt.execute("CREATE DATABASE " + dbName);
         stmt.execute("USE DATABASE " + dbName);
-        stmt.execute("CREATE TABLE users (name STRING,email STRING)");
+        stmt.execute("CREATE TABLE users (name STRING, email STRING)");
         stmt.execute("CREATE TABLE orders (user_id STRING, product STRING, total INT)");
 
         stmt.execute("INSERT INTO users (name,email) VALUES (\"Alice\",\"alice@example.com\")");
@@ -211,5 +211,30 @@ public class GitDBIntegrationTest {
         ResultSet rs = stmt.executeQuery("SELECT * FROM users WHERE name=\"Bob\"");
         Assertions.assertTrue(rs.next());
         Assertions.assertDoesNotThrow(() -> rs.getObject("age"));
+    }
+
+    @Test
+    void whereInSubquery() throws Exception {
+        Statement stmt = conn.createStatement();
+
+        stmt.execute("CREATE TABLE nicknames (nickname STRING)");
+        stmt.execute("CREATE TABLE people (name STRING, email STRING, nickname STRING)");
+        stmt.execute("INSERT INTO people (name,email,nickname) VALUES (\"Charlie\",\"charlie@example.com\",\"char\")");
+        stmt.execute("INSERT INTO people (name,email,nickname) VALUES (\"Dana\",\"dana@example.com\",\"d\")");
+        stmt.execute("INSERT INTO people (name,email,nickname) VALUES (\"Eve\",\"eve@example.com\",\"eve\")");
+
+        stmt.execute("INSERT INTO nicknames (nickname) VALUES (\"char\")");
+        stmt.execute("INSERT INTO nicknames (nickname) VALUES (\"eve\")");
+
+        ResultSet rs = stmt.executeQuery("SELECT name FROM people WHERE nickname IN (SELECT nickname FROM nicknames)");
+
+        Set<String> results = new HashSet<>();
+        while (rs.next()) {
+            results.add(rs.getString("name"));
+        }
+        Assertions.assertTrue(results.contains("Charlie"));
+        Assertions.assertTrue(results.contains("Eve"));
+        Assertions.assertFalse(results.contains("Dana"));
+        Assertions.assertEquals(2, results.size());
     }
 }

@@ -19,6 +19,22 @@ import (
 	"math"
 )
 
+var (
+	createDB = regexp.MustCompile(`(?i)^CREATE DATABASE (\w+)$`)
+	dropDB = regexp.MustCompile(`(?i)^DROP DATABASE (\w+)$`)
+	useDB = regexp.MustCompile(`(?i)^USE DATABASE (\w+)$`)
+	createTable = regexp.MustCompile(`(?i)^CREATE TABLE (\w+) \((.+)\)$`)
+	dropTable = regexp.MustCompile(`(?i)^DROP TABLE (\w+)$`)
+	truncate = regexp.MustCompile(`(?i)^TRUNCATE TABLE (\w+)$`)
+	insert = regexp.MustCompile(`(?i)^INSERT INTO (\w+) \((.+)\) VALUES \((.+)\)$`)
+	deleteWhere = regexp.MustCompile(`(?i)^DELETE FROM (\w+)\s+WHERE\s+(.+)$`)
+	selectRe = regexp.MustCompile(`(?i)^SELECT\s+(DISTINCT\s+)?(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER BY\s+(\w+)(?:\s+(ASC|DESC))?)?(?:\s+LIMIT\s+(\d+))?(?:\s+OFFSET\s+(\d+))?$`)
+	joinRe = regexp.MustCompile(`(?i)^SELECT \* FROM (\w+) JOIN (\w+) ON (\w+)\.(\w+)=\w+\.(\w+)$`)
+	alterAddColumn = regexp.MustCompile(`(?i)^ALTER TABLE (\w+) ADD COLUMN (\w+)\s+(\w+)$`)
+	inSubselectRe = regexp.MustCompile(`(?i)(\w+)\s+IN\s+\(\s*SELECT\s+(\w+)\s+FROM\s+(\w+)\s*\)`)
+
+)
+
 type Row map[string]interface{}
 
 type Session struct {
@@ -115,7 +131,9 @@ func (db *GitDB) UseDatabase(name string, sessionID string) error {
             return fmt.Errorf("failed to init git: %w", err)
         }
     }
-
+    if err := db.loadSchemasForDatabase(name); err != nil {
+        return err
+    }
     return nil
 }
 
@@ -310,59 +328,87 @@ func (db *GitDB) Query(table, where, orderBy, orderDir string, limit, offset int
     if err != nil {
         return []Row{}, err 
     }
+
     dir := filepath.Join(root, table)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+    if _, err := os.Stat(dir); os.IsNotExist(err) {
         return nil, fmt.Errorf("table %q does not exist", table)
     }
-	files, _ := ioutil.ReadDir(dir)
-	var results []Row
-	conds := parseWhereClause(where)
 
-	for _, f := range files {
-		if !strings.HasSuffix(f.Name(), ".json") || strings.HasPrefix(f.Name(), "_") {
-			continue
-		}
+    var inField, inSelectField, inSelectTable string
+    var inSet map[string]bool
+    if matches := inSubselectRe.FindStringSubmatch(where); len(matches) > 0 {
+        inField, inSelectField, inSelectTable = matches[1], matches[2], matches[3]
+        subRows, err := db.Query(inSelectTable, "", "", "", 0, 0, sessionID)
+        if err != nil {
+            return nil, err
+        }
 
-		data, err := ioutil.ReadFile(filepath.Join(dir, f.Name()))
-		if err != nil {
-			continue
-		}
+        inSet = map[string]bool{}
+        for _, row := range subRows {
+            inSet[fmt.Sprint(row[inSelectField])] = true
+        }
 
-		var row Row
-		if err := json.Unmarshal(data, &row); err != nil {
-			continue
-		}
-	
-		if deleted, ok := row["deleted"].(bool); ok && deleted {
-			continue
-		}
+        where = ""
+    }
 
-		if matchesConditions(row, conds) {
-			results = append(results, row)
-		}
-	}
+    conds := parseWhereClause(where)
+    files, _ := ioutil.ReadDir(dir)
+    var results []Row
 
-	if orderBy != "" {
-		desc := strings.ToUpper(orderDir) == "DESC"
-		sort.Slice(results, func(i, j int) bool {
-			less := valueLess(results[i][orderBy], results[j][orderBy])
-			if desc {
-				return !less
-			}
-			return less
-		})
-	}
+    for _, f := range files {
+        if !strings.HasSuffix(f.Name(), ".json") || strings.HasPrefix(f.Name(), "_") {
+            continue
+        }
 
-	if offset > len(results) {
-		return []Row{}, nil
-	}
-	results = results[offset:]
-	if limit > 0 && limit < len(results) {
-		results = results[:limit]
-	}
+        data, err := ioutil.ReadFile(filepath.Join(dir, f.Name()))
+        if err != nil {
+            continue
+        }
 
-	return results, nil
+        var row Row
+        if err := json.Unmarshal(data, &row); err != nil {
+            continue
+        }
+
+        if deleted, ok := row["deleted"].(bool); ok && deleted {
+            continue
+        }
+
+        if len(inSet) > 0 {
+            val := fmt.Sprint(row[inField])
+            if !inSet[val] {
+                continue
+            }
+        }
+
+        if matchesConditions(row, conds) {
+            results = append(results, row)
+        }
+    }
+
+    if orderBy != "" {
+        desc := strings.ToUpper(orderDir) == "DESC"
+        sort.Slice(results, func(i, j int) bool {
+            less := valueLess(results[i][orderBy], results[j][orderBy])
+            if desc {
+                return !less
+            }
+            return less
+        })
+    }
+
+    if offset > len(results) {
+        return []Row{}, nil
+    }
+
+    results = results[offset:]
+    if limit > 0 && limit < len(results) {
+        results = results[:limit]
+    }
+
+    return results, nil
 }
+
 
 func (db *GitDB) AlterTableAddColumn(table string, col Column, sessionID string) error {
     root, err := db.dbPath(sessionID)
@@ -637,20 +683,10 @@ func (db *GitDB) gitCommit(root, msg string) error {
 	return nil
 }
 
+
+
 func (db *GitDB) executeStatement(sql string, sessionID string) (any, error) {
 	sql = strings.TrimSpace(sql)
-
-	createDB := regexp.MustCompile(`(?i)^CREATE DATABASE (\w+)$`)
-	dropDB := regexp.MustCompile(`(?i)^DROP DATABASE (\w+)$`)
-	useDB := regexp.MustCompile(`(?i)^USE DATABASE (\w+)$`)
-	createTable := regexp.MustCompile(`(?i)^CREATE TABLE (\w+) \((.+)\)$`)
-	dropTable := regexp.MustCompile(`(?i)^DROP TABLE (\w+)$`)
-	truncate := regexp.MustCompile(`(?i)^TRUNCATE TABLE (\w+)$`)
-	insert := regexp.MustCompile(`(?i)^INSERT INTO (\w+) \((.+)\) VALUES \((.+)\)$`)
-	deleteWhere := regexp.MustCompile(`(?i)^DELETE FROM (\w+)\s+WHERE\s+(.+)$`)
-	selectRe := regexp.MustCompile(`(?i)^SELECT\s+(DISTINCT\s+)?(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER BY\s+(\w+)(?:\s+(ASC|DESC))?)?(?:\s+LIMIT\s+(\d+))?(?:\s+OFFSET\s+(\d+))?$`)
-	joinRe := regexp.MustCompile(`(?i)^SELECT \* FROM (\w+) JOIN (\w+) ON (\w+)\.(\w+)=\w+\.(\w+)$`)
-	alterAddColumn := regexp.MustCompile(`(?i)^ALTER TABLE (\w+) ADD COLUMN (\w+)\s+(\w+)$`)
 
 	switch {
 	case createDB.MatchString(sql):
@@ -829,6 +865,38 @@ func (db *GitDB) ExecuteSQL(statement, sessionID string) (any, error) {
         results = append(results, result)
     }
     return results, nil
+}
+
+
+func (db *GitDB) loadSchemasForDatabase(dbName string) error {
+    dbPath := filepath.Join(db.GlobalRoot, dbName)
+    err := filepath.Walk(dbPath, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        if info.Name() == "_schema.json" {
+            relPath, err := filepath.Rel(dbPath, filepath.Dir(path))
+            if err != nil {
+                return err
+            }
+            data, err := os.ReadFile(path)
+            if err != nil {
+                return err
+            }
+            var columns []Column
+            if err := json.Unmarshal(data, &columns); err != nil {
+                return err
+            }
+            db.mu.Lock()
+            db.Schema[filepath.Join(dbName, relPath)] = columns
+            db.mu.Unlock()
+        }
+        return nil
+    })
+    if err != nil {
+        return fmt.Errorf("failed to load schemas for database %s: %w", dbName, err)
+    }
+    return nil
 }
 
 func (db *GitDB) loadSchemas() error {
